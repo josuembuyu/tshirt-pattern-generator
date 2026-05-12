@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Flask
+instance/
+.webassets-cache
+
+# Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+test_*.dxf
+test_*.svg
+test_*.zip
+test_*.pdf
+*.dxf
+*.svg
+*.zip
+*.pdf
+
+# Except examples
+!example_*.dxf
+!example_*.svg
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Temporary
+tmp/
+temp/
