@@ -22,11 +22,12 @@ export async function generatePatterns(input: {
   appearance: TextileAppearance;
   selected_sizes: SizeName[];
   grading_table: Record<SizeName, Measurements>;
-}): Promise<PatternResponse> {
+}, signal?: AbortSignal): Promise<PatternResponse> {
   return request("/api/patterns/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    signal
   });
 }
 
@@ -76,7 +77,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function safeFetch(path: string, init?: RequestInit) {
   try {
     return await fetch(path, init);
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
     throw new Error("API FastAPI non joignable. Lancez le backend sur http://localhost:8000 puis rechargez la page.");
   }
 }

@@ -54,6 +54,12 @@ const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   measurements: true
 };
 
+let generationToken = 0;
+let activeGenerationController: AbortController | null = null;
+let lastHistoryCommitAt = 0;
+let autosaveTimer: number | null = null;
+let pendingAutosave: AutosaveDraft | null = null;
+
 interface Snapshot {
   activeSize: SizeName;
   options: GarmentOptions;
@@ -154,6 +160,10 @@ export const usePatternStore = create<PatternState>((set, get) => ({
   },
   regenerate: async () => {
     const state = get();
+    const token = ++generationToken;
+    activeGenerationController?.abort();
+    const controller = new AbortController();
+    activeGenerationController = controller;
     set({ isLoading: true, error: null });
     try {
       const response = await generatePatterns({
@@ -163,10 +173,17 @@ export const usePatternStore = create<PatternState>((set, get) => ({
         appearance: state.appearance,
         selected_sizes: state.selectedSizes,
         grading_table: state.gradingTable
-      });
+      }, controller.signal);
+      if (token !== generationToken) return;
       set({ response, isLoading: false });
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (token !== generationToken) return;
       set({ error: error instanceof Error ? error.message : "La génération du patron a échoué", isLoading: false });
+    } finally {
+      if (activeGenerationController === controller) {
+        activeGenerationController = null;
+      }
     }
   },
   setActiveSize: (size) => {
@@ -175,7 +192,7 @@ export const usePatternStore = create<PatternState>((set, get) => ({
       activeSize: size,
       selectedSizes: state.selectedSizes.includes(size) ? state.selectedSizes : [size]
     }));
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   toggleSelectedSize: (size) => {
     commit(set, get);
@@ -184,7 +201,7 @@ export const usePatternStore = create<PatternState>((set, get) => ({
       const selectedSizes = exists ? state.selectedSizes.filter((item) => item !== size) : [...state.selectedSizes, size];
       return { selectedSizes: selectedSizes.length ? selectedSizes : [state.activeSize], overlayMode: selectedSizes.length > 1 ? state.overlayMode : false };
     });
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   updateMeasurement: (key, value, size) => {
     commit(set, get);
@@ -197,33 +214,33 @@ export const usePatternStore = create<PatternState>((set, get) => ({
         }
       };
     });
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   updateOption: (key, value) => {
     commit(set, get);
     set((state) => ({ options: { ...state.options, [key]: value } }));
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   updateAppearance: (key, value) => {
     commit(set, get);
     set((state) => ({ appearance: { ...state.appearance, [key]: value } }));
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   toggleLayer: (layer) => {
     set((state) => ({ layers: { ...state.layers, [layer]: !state.layers[layer] } }));
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   setOverlayMode: (overlayMode) => {
     set({ overlayMode });
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   setCamera: (camera) => {
     set((state) => ({ camera: { ...state.camera, ...camera } }));
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   resetCamera: () => {
     set({ camera: DEFAULT_CAMERA });
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   undo: () => {
     const state = get();
@@ -235,7 +252,7 @@ export const usePatternStore = create<PatternState>((set, get) => ({
       history: state.history.slice(0, -1),
       future: [current, ...state.future]
     });
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   redo: () => {
     const state = get();
@@ -247,7 +264,7 @@ export const usePatternStore = create<PatternState>((set, get) => ({
       history: [...state.history, current].slice(-40),
       future: state.future.slice(1)
     });
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   saveProject: () => {
     const state = get();
@@ -271,7 +288,7 @@ export const usePatternStore = create<PatternState>((set, get) => ({
       history: [],
       future: []
     });
-    writeAutosave(get());
+    scheduleAutosave(get());
   },
   exportFile: async (format) => {
     const state = get();
@@ -299,6 +316,9 @@ function snapshot(state: PatternState): Snapshot {
 }
 
 function commit(set: (partial: any) => void, get: () => PatternState) {
+  const now = performance.now();
+  if (now - lastHistoryCommitAt < 360) return;
+  lastHistoryCommitAt = now;
   const state = get();
   set({ history: [...state.history, snapshot(state)].slice(-40), future: [] });
 }
@@ -332,9 +352,9 @@ function readAutosave(): AutosaveDraft | null {
   }
 }
 
-function writeAutosave(state: PatternState) {
+function scheduleAutosave(state: PatternState) {
   if (typeof window === "undefined") return;
-  const draft: AutosaveDraft = {
+  pendingAutosave = {
     version: 2,
     activeSize: state.activeSize,
     selectedSizes: state.selectedSizes,
@@ -345,8 +365,22 @@ function writeAutosave(state: PatternState) {
     camera: state.camera,
     layers: state.layers
   };
+
+  if (autosaveTimer !== null) {
+    window.clearTimeout(autosaveTimer);
+  }
+
+  autosaveTimer = window.setTimeout(() => {
+    flushAutosave();
+  }, 180);
+}
+
+function flushAutosave() {
+  if (typeof window === "undefined" || !pendingAutosave) return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(pendingAutosave));
+    pendingAutosave = null;
+    autosaveTimer = null;
   } catch {
     // Le navigateur peut refuser localStorage en navigation privée stricte.
   }
@@ -368,4 +402,13 @@ function isSizeName(value: unknown): value is SizeName {
 
 function validNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", flushAutosave);
+  window.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      flushAutosave();
+    }
+  });
 }
